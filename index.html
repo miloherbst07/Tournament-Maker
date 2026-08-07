@@ -255,6 +255,7 @@
     <nav class="top-nav" id="topNav">
       <button data-r="dashboard">Tournaments</button>
       <button data-r="teams">Teams</button>
+      <button data-r="rankings">Rankings</button>
       <button data-r="new">+ New</button>
     </nav>
   </header>
@@ -423,6 +424,86 @@ function roundName(totalRounds, roundIndex){
   if(fromEnd===1) return 'Semi-final';
   if(fromEnd===2) return 'Quarter-final';
   return 'Round of '+Math.pow(2, fromEnd+1);
+}
+
+/* =========================================================
+   WORLD RANKING
+   Win = 4pts, Draw = 2pts, Loss = 1pt (accumulated every match).
+   Plus a one-off stage bonus for the deepest stage reached
+   (not cumulative through earlier rounds — only the final stage counts).
+   Only COMPLETED tournaments count toward ranking.
+========================================================= */
+const MATCH_PTS = {win:4, draw:2, loss:1};
+const STAGE_BONUS = {
+  winner:5, runner_up:4, third:3, semi:3, quarter:2, r16:1,
+  r32:0, r64:0, group:0, league:0
+};
+// Synthetic win/loss record used for manually-added past records, since we
+// only know the finishing stage and not individual match results.
+const STAGE_SYNTH_RECORD = {
+  r64:{wins:0,losses:1}, r32:{wins:1,losses:1}, r16:{wins:2,losses:1},
+  quarter:{wins:3,losses:1}, semi:{wins:4,losses:1}, third:{wins:5,losses:1},
+  runner_up:{wins:5,losses:1}, winner:{wins:6,losses:0},
+  group:{wins:1,losses:2}, league:{wins:3,losses:3}
+};
+const KNOCKOUT_STAGE_KEYS = ['r64','r32','r16','quarter','semi','third','runner_up','winner'];
+
+function computeTeamRankingPoints(teamId){
+  let points = 0;
+  allTournamentsForTeam(teamId).forEach(t=>{
+    if(t.status!=='completed') return; // in-progress tournaments never affect ranking
+    let w=0,d=0,l=0;
+    collectPlainMatches(t).filter(m=>m.played && (m.home===teamId||m.away===teamId)).forEach(m=>{
+      const my = m.home===teamId?m.homeScore:m.awayScore, opp = m.home===teamId?m.awayScore:m.homeScore;
+      if(my>opp) w++; else if(my<opp) l++; else d++;
+    });
+    collectBracketMatches(t).filter(m=>m.played && !m.bye && (m.teamA===teamId||m.teamB===teamId)).forEach(m=>{
+      if(m.winner===teamId) w++; else l++;
+    });
+    points += w*MATCH_PTS.win + d*MATCH_PTS.draw + l*MATCH_PTS.loss;
+    const stage = stageForTeamInTournament(t, teamId);
+    if(stage && STAGE_BONUS[stage]!==undefined) points += STAGE_BONUS[stage];
+  });
+  (DB.teams[teamId].records || []).forEach(r=>{
+    const rec = STAGE_SYNTH_RECORD[r.stage] || {wins:0,losses:0};
+    let wins = rec.wins, losses = rec.losses;
+    if(KNOCKOUT_STAGE_KEYS.includes(r.stage)) wins += 3; // credit for clearing the group phase
+    points += wins*MATCH_PTS.win + losses*MATCH_PTS.loss;
+    if(STAGE_BONUS[r.stage]!==undefined) points += STAGE_BONUS[r.stage];
+  });
+  return points;
+}
+// Full leaderboard, all teams, highest points first
+function computeRankingBoard(){
+  return Object.values(DB.teams).map(t=>({
+      id:t.id, name:t.name, points: computeTeamRankingPoints(t.id),
+      tournaments: allTournamentsForTeam(t.id).filter(x=>x.status==='completed').length + (t.records||[]).length
+    }))
+    .sort((a,b)=> b.points-a.points || a.name.localeCompare(b.name));
+}
+function getTeamRank(teamId){
+  const board = computeRankingBoard();
+  const idx = board.findIndex(r=>r.id===teamId);
+  return idx===-1 ? null : {rank: idx+1, points: board[idx].points, total: board.length};
+}
+// Order team ids by current ranking (best first); brand-new teams (0 pts, no history) sort last
+function sortTeamIdsByRanking(ids){
+  const pts = {}; ids.forEach(id=> pts[id]=computeTeamRankingPoints(id));
+  return [...ids].sort((a,b)=> pts[b]-pts[a] || teamName(a).localeCompare(teamName(b)));
+}
+// Snake / pot distribution: spreads the strongest teams evenly across groups
+// so top teams land in different groups rather than clustering together.
+function snakeDistribute(orderedIds, numGroups){
+  const groups = Array.from({length:numGroups}, ()=>[]);
+  let tier = 0;
+  for(let i=0;i<orderedIds.length;i+=numGroups){
+    const slice = orderedIds.slice(i, i+numGroups);
+    const order = [...Array(numGroups).keys()];
+    if(tier%2===1) order.reverse();
+    slice.forEach((id,idx)=> groups[order[idx]].push(id));
+    tier++;
+  }
+  return groups;
 }
 
 function teamResultInTournament(t, teamId){
@@ -623,6 +704,7 @@ function render(){
   else if(ROUTE.name==='tournament') app.innerHTML = renderTournament(ROUTE.params.id);
   else if(ROUTE.name==='teams') app.innerHTML = renderTeams();
   else if(ROUTE.name==='team') app.innerHTML = renderTeamDetail(ROUTE.params.id);
+  else if(ROUTE.name==='rankings') app.innerHTML = renderRankings();
   attachHandlers();
 }
 
@@ -678,7 +760,7 @@ function renderNewTournament(){
     name:'', type:'league',
     league:{numTeams:8, double:false, win:3, draw:1, loss:0},
     knockout:{numTeams:8, seeding:'seeded', thirdPlace:false},
-    group:{numGroups:4, teamsPerGroup:4, advance:2, win:3, draw:1, loss:0, thirdPlace:false},
+    group:{numGroups:4, teamsPerGroup:4, advance:2, win:3, draw:1, loss:0, thirdPlace:false, mode:'sequential'},
     teamNamesSet:false, teamNames:[]
   });
 
@@ -710,6 +792,7 @@ function renderNewTournament(){
         <div class="field"><label>Seeding</label>
           <select id="f_ko_seeding">
             <option value="seeded" ${f.knockout.seeding==='seeded'?'selected':''}>Seeded (order you enter = seed 1, 2, 3…)</option>
+            <option value="ranking" ${f.knockout.seeding==='ranking'?'selected':''}>By World Ranking (top teams kept apart)</option>
             <option value="random" ${f.knockout.seeding==='random'?'selected':''}>Random draw</option>
           </select></div>
       </div>
@@ -723,14 +806,23 @@ function renderNewTournament(){
         <div class="field"><label>Teams per group</label><input type="number" min="2" max="12" id="f_g_teamsPerGroup" value="${f.group.teamsPerGroup}"></div>
         <div class="field"><label>Teams advancing per group</label><input type="number" min="1" max="11" id="f_g_advance" value="${f.group.advance}"></div>
       </div>
+      <div class="row2">
+        <div class="field"><label>Group assignment</label>
+          <select id="f_g_mode">
+            <option value="sequential" ${f.group.mode==='sequential'?'selected':''}>As entered (block by group)</option>
+            <option value="ranking" ${f.group.mode==='ranking'?'selected':''}>By World Ranking (top teams spread apart)</option>
+            <option value="random" ${f.group.mode==='random'?'selected':''}>Random draw</option>
+          </select></div>
+        <div class="field"><label>&nbsp;</label>
+          <div class="checkline" style="margin-top:9px;"><input type="checkbox" id="f_g_third" ${f.group.thirdPlace?'checked':''}>
+            <label for="f_g_third">Third-place match in the knockout stage</label></div></div>
+      </div>
       <div class="row3">
         <div class="field"><label>Points — Win</label><input type="number" id="f_g_win" value="${f.group.win}"></div>
         <div class="field"><label>Points — Draw</label><input type="number" id="f_g_draw" value="${f.group.draw}"></div>
         <div class="field"><label>Points — Loss</label><input type="number" id="f_g_loss" value="${f.group.loss}"></div>
       </div>
-      <div class="checkline"><input type="checkbox" id="f_g_third" ${f.group.thirdPlace?'checked':''}>
-        <label for="f_g_third">Play a third-place match in the knockout stage</label></div>
-      <p class="hint">Group standings decide seeding into the knockout bracket automatically.</p>`;
+      <p class="hint">"By World Ranking" pots the strongest teams and spreads them one per group, like a draw seeding. Knockout-stage seeding after groups always uses this same approach automatically.</p>`;
   }
 
   let namingHtml = '';
@@ -739,17 +831,27 @@ function renderNewTournament(){
     const datalist = `<datalist id="knownTeams">${known.map(n=>`<option value="${esc(n)}">`).join('')}</datalist>`;
     const labelFor = (i)=>{
       if(f.type==='knockout' && f.knockout.seeding==='seeded') return 'Seed '+(i+1);
-      if(f.type==='group_knockout') return 'Team '+(i+1);
       return 'Team '+(i+1);
+    };
+    const rankTagFor = (name)=>{
+      const n = (name||'').trim().toLowerCase();
+      if(!n) return '';
+      const team = Object.values(DB.teams).find(t=>t.name.toLowerCase()===n);
+      if(!team) return '<span class="hint newTeamTag" style="margin-top:4px;">New team</span>';
+      const r = getTeamRank(team.id);
+      return `<span class="hint rankTag" style="margin-top:4px; color:var(--gold);">Rank #${r.rank} · ${r.points} pts</span>`;
     };
     namingHtml = `
       <div class="divider"></div>
-      <div class="section-title"><h3>Name your teams</h3></div>
-      <p class="hint" style="margin-bottom:14px;">Start typing to reuse a team from your records, or enter a new name — it'll be added automatically.</p>
+      <div class="section-title"><h3>Name your teams</h3>
+        <button class="btn btn-sm" id="shuffleNamesBtn">🎲 Randomize Order</button>
+      </div>
+      <p class="hint" style="margin-bottom:14px;">Start typing to reuse a team from your records, or enter a new name — it'll be added automatically. Randomizing shuffles who lands in which seed slot or group.</p>
       ${datalist}
       <div class="team-name-grid">
         ${f.teamNames.map((n,i)=> `<div class="field" style="margin-bottom:0;"><label>${labelFor(i)}</label>
-          <input type="text" list="knownTeams" class="teamNameInput" data-idx="${i}" value="${esc(n)}" placeholder="Team name"></div>`).join('')}
+          <input type="text" list="knownTeams" class="teamNameInput" data-idx="${i}" value="${esc(n)}" placeholder="Team name">
+          <div class="rankTagWrap" data-tag-idx="${i}">${rankTagFor(n)}</div></div>`).join('')}
       </div>
       <div style="margin-top:24px; display:flex; gap:10px;">
         <button class="btn btn-primary" id="createTournamentBtn">Create Tournament</button>
@@ -808,16 +910,23 @@ function createTournamentFromForm(f){
     t.settings = {seeding:f.knockout.seeding, thirdPlace:f.knockout.thirdPlace};
     let ids = [...orderedIds];
     if(f.knockout.seeding==='random') ids = shuffle(ids);
+    else if(f.knockout.seeding==='ranking') ids = sortTeamIdsByRanking(ids);
     t.bracket = buildBracket(ids, f.knockout.thirdPlace);
   } else {
     const numGroups = clampInt(f.group.numGroups,2,16);
     const perGroup = clampInt(f.group.teamsPerGroup,2,12);
     const advance = Math.min(clampInt(f.group.advance,1,11), perGroup-1 || 1);
-    t.settings = {numGroups, teamsPerGroup:perGroup, advancePerGroup:advance, points:{win:f.group.win, draw:f.group.draw, loss:f.group.loss}, thirdPlace:f.group.thirdPlace};
+    t.settings = {numGroups, teamsPerGroup:perGroup, advancePerGroup:advance, points:{win:f.group.win, draw:f.group.draw, loss:f.group.loss}, thirdPlace:f.group.thirdPlace, mode:f.group.mode};
+    let assignIds = [...orderedIds];
+    if(f.group.mode==='random') assignIds = shuffle(assignIds);
+    else if(f.group.mode==='ranking') assignIds = sortTeamIdsByRanking(assignIds);
+    const distributed = (f.group.mode==='ranking' || f.group.mode==='random')
+      ? snakeDistribute(assignIds, numGroups)
+      : Array.from({length:numGroups}, (_,g)=> assignIds.slice(g*perGroup,(g+1)*perGroup));
     const groupNames = 'ABCDEFGHIJKLMNOP'.split('');
     const groups = [];
     for(let g=0; g<numGroups; g++){
-      const gIds = orderedIds.slice(g*perGroup, (g+1)*perGroup);
+      const gIds = distributed[g];
       groups.push({name:groupNames[g], teamIds:gIds, matches: generateRoundRobin(gIds, false)});
     }
     t.groups = groups;
@@ -860,7 +969,8 @@ function renderTournament(id){
 
 function renderLeagueView(t){
   const complete = t.matches.every(m=>m.played);
-  if(complete && t.status!=='completed'){ finalizeLeague(t); }
+  if(complete){ finalizeLeague(t); }
+  else if(t.status==='completed'){ t.status='active'; saveDB(); } // a match got un-played somehow; reopen
   const standings = computeStandings(t.teamIds, t.matches, t.settings.points);
   let champBanner = '';
   if(t.status==='completed'){
@@ -920,11 +1030,8 @@ function renderKnockoutView(t, bracket, groupCtxLabel){
   const totalRounds = bracket.rounds.length;
   const final = bracket.rounds[totalRounds-1][0];
   let champBanner = '';
-  if(final.played && !t._suppressBanner){
-    if(t.type==='knockout' && t.status!=='completed'){
-      t.status='completed'; t.winnerTeamId = final.winner; t.runnerUpTeamId = final.teamA===final.winner?final.teamB:final.teamA; saveDB();
-    }
-    if(t.type==='group_knockout' && bracket===t.knockout && t.status!=='completed'){
+  if(final.played){
+    if(t.type==='knockout' || (t.type==='group_knockout' && bracket===t.knockout)){
       t.status='completed'; t.winnerTeamId = final.winner; t.runnerUpTeamId = final.teamA===final.winner?final.teamB:final.teamA; saveDB();
     }
     champBanner = `<div class="champion-banner"><span class="eyebrow">Champion</span><h2>🏆 ${esc(teamName(final.winner))}</h2></div>`;
@@ -975,7 +1082,9 @@ function renderGroupKnockoutView(t){
         <p>Top ${t.settings.advancePerGroup} team${t.settings.advancePerGroup>1?'s':''} from each group will advance, seeded to avoid same-group clashes where possible.</p>
         <button class="btn btn-primary" data-generate-knockout="${t.id}">Generate Knockout Bracket</button></div>`;
     } else {
-      content = renderKnockoutView(t, t.knockout, true);
+      content = `<div style="display:flex; justify-content:flex-end; margin-bottom:-6px;">
+          <button class="btn btn-sm btn-ghost" data-regenerate-knockout="${t.id}">⟳ Regenerate from group results</button>
+        </div>` + renderKnockoutView(t, t.knockout, true);
     }
   } else {
     const g = t.groups.find(x=>x.name===VIEWSTATE.activeGroup);
@@ -988,7 +1097,9 @@ function renderGroupKnockoutView(t){
       <td class="num">${r.played}</td><td class="num">${r.won}</td><td class="num">${r.draw}</td><td class="num">${r.lost}</td>
       <td class="num">${r.gf-r.ga}</td><td class="pts">${r.pts}</td>
     </tr>`).join('')}</tbody></table>`;
+    const staleWarning = t.knockout ? `<p class="hint" style="color:var(--gold); margin-bottom:14px;">Knockout bracket already generated — editing results here won't change it automatically. Use "Regenerate from group results" on the Knockout tab if qualification should change.</p>` : '';
     content = `<div class="card" style="margin-bottom:22px; overflow-x:auto;">${table}</div>
+      ${staleWarning}
       <div class="section-title"><h3>Group ${g.name} Fixtures</h3></div>
       ${g.matches.map(m=>matchRowHtml_Group(t,g,m)).join('')}`;
   }
@@ -1012,13 +1123,16 @@ function matchRowHtml_Group(t, g, m){
 }
 
 function generateKnockoutForGroupTournament(t){
-  const numGroups = t.settings.numGroups, adv = t.settings.advancePerGroup;
+  const adv = t.settings.advancePerGroup;
   const byPosition = [];
   for(let pos=0; pos<adv; pos++){
+    const tierIds = [];
     t.groups.forEach(g=>{
       const st = computeStandings(g.teamIds, g.matches, t.settings.points);
-      if(st[pos]) byPosition.push(st[pos].teamId);
+      if(st[pos]) tierIds.push(st[pos].teamId);
     });
+    // within this tier (e.g. all group winners), strongest-ranked first — keeps top teams apart deeper into the bracket
+    byPosition.push(...sortTeamIdsByRanking(tierIds));
   }
   t.knockout = buildBracket(byPosition, t.settings.thirdPlace);
   saveDB();
@@ -1027,6 +1141,27 @@ function generateKnockoutForGroupTournament(t){
 /* =========================================================
    TEAMS
 ========================================================= */
+function renderRankings(){
+  const board = computeRankingBoard();
+  if(board.length===0){
+    return `<div class="page-head"><span class="eyebrow">World Ranking</span><h1>Rankings</h1></div>
+      <div class="empty-state"><h3>No teams yet</h3><p>Rankings build up as tournaments are completed, or once you add past records to a team.</p></div>`;
+  }
+  const rows = board.map((r,i)=>`<li data-goto-team="${r.id}" style="cursor:pointer;">
+    <div style="display:flex; align-items:center; gap:14px;">
+      <span class="rank-badge" style="width:28px; font-size:15px; ${i<3?'color:var(--gold); font-weight:700;':''}">${i+1}</span>
+      <div class="tname">${esc(r.name)}</div>
+    </div>
+    <div class="tstats"><span class="stat-chip">${r.tournaments} event${r.tournaments!==1?'s':''}</span>
+      <span class="stat-chip" style="margin-left:14px;"><b class="mono" style="color:var(--gold); font-size:15px;">${r.points}</b> pts</span></div>
+  </li>`).join('');
+  return `
+    <div class="page-head"><span class="eyebrow">World Ranking</span><h1>Rankings</h1>
+      <p>Win +${MATCH_PTS.win} · Draw +${MATCH_PTS.draw} · Loss +${MATCH_PTS.loss} per match, plus a one-off bonus for the deepest stage reached (Round of 16 +1, Quarter-final +2, Semi-final +3, Runner-up +4, Winner +5). Only completed tournaments count.</p>
+    </div>
+    <div class="card" style="padding:0;"><ul class="team-list">${rows}</ul></div>
+  `;
+}
 function renderTeams(){
   const teams = Object.values(DB.teams).map(t=>{
     const stats = computeTeamCareerStats(t.id);
@@ -1044,6 +1179,7 @@ function renderTeams(){
       <div class="tstats">${t.stats.tournaments + t.recCount} tournament${(t.stats.tournaments+t.recCount)!==1?'s':''} · ${t.stats.played} matches played here</div>
     </div>
     <div class="tstats">
+      <span class="stat-chip"><b class="mono" style="color:var(--gold);">${computeTeamRankingPoints(t.id)}</b> pts</span>
       <span class="stat-chip">🏆 <b>${t.titles}</b></span>
       <span class="stat-chip">W <b style="color:var(--teal)">${t.stats.wins}</b></span>
       <span class="stat-chip">D <b>${t.stats.draws}</b></span>
@@ -1087,6 +1223,7 @@ function renderTeamDetail(id){
     <div class="hresult">${esc(teamResultInTournament(t,id))}</div>
   </div>`).join('');
 
+  const rank = getTeamRank(id);
   return `
     <div class="back-link" data-r="teams">← All teams</div>
     <div class="page-head" style="display:flex; justify-content:space-between; align-items:flex-start; gap:14px; flex-wrap:wrap;">
@@ -1096,10 +1233,15 @@ function renderTeamDetail(id){
         <button class="btn btn-sm btn-danger" data-delete-team="${id}">Delete team</button>
       </div>
     </div>
-    <div class="row3" style="margin-bottom:24px;">
+    <div class="row3" style="margin-bottom:14px;">
+      <div class="card" style="text-align:center;"><div class="eyebrow">World Rank</div><h2 style="font-size:28px;color:var(--gold);">#${rank?rank.rank:'—'}</h2></div>
+      <div class="card" style="text-align:center;"><div class="eyebrow">Ranking Points</div><h2 style="font-size:28px;" class="mono">${rank?rank.points:0}</h2></div>
       <div class="card" style="text-align:center;"><div class="eyebrow">Titles</div><h2 style="font-size:28px;color:var(--gold);">${stageCounts.winner}</h2></div>
+    </div>
+    <div class="row3" style="margin-bottom:24px;">
       <div class="card" style="text-align:center;"><div class="eyebrow">Record (played here)</div><h2 style="font-size:20px;" class="mono">${stats.wins}-${stats.draws}-${stats.losses}</h2></div>
       <div class="card" style="text-align:center;"><div class="eyebrow">Tournaments</div><h2 style="font-size:28px;">${stats.tournaments + records.length}</h2></div>
+      <div class="card" style="text-align:center;"><div class="eyebrow">Matches Played</div><h2 style="font-size:28px;">${stats.played}</h2></div>
     </div>
 
     <div class="section-title"><h3>Stages Reached</h3></div>
@@ -1168,6 +1310,7 @@ function attachHandlers(){
   const koThird = document.getElementById('f_ko_third');
   if(koThird) koThird.addEventListener('change', e=> VIEWSTATE.form.knockout.thirdPlace = e.target.checked);
 
+  bindSel('f_g_mode', v=> VIEWSTATE.form.group.mode=v);
   bindNum('f_g_numGroups', v=> VIEWSTATE.form.group.numGroups=v);
   bindNum('f_g_teamsPerGroup', v=> VIEWSTATE.form.group.teamsPerGroup=v);
   bindNum('f_g_advance', v=> VIEWSTATE.form.group.advance=v);
@@ -1192,7 +1335,24 @@ function attachHandlers(){
   if(editSettingsBtn) editSettingsBtn.addEventListener('click', ()=>{ VIEWSTATE.form.teamNamesSet=false; render(); });
 
   app.querySelectorAll('.teamNameInput').forEach(el=>{
-    el.addEventListener('input', e=>{ VIEWSTATE.form.teamNames[parseInt(e.target.dataset.idx,10)] = e.target.value; });
+    el.addEventListener('input', e=>{
+      const idx = parseInt(e.target.dataset.idx,10);
+      VIEWSTATE.form.teamNames[idx] = e.target.value;
+      const tagWrap = app.querySelector(`.rankTagWrap[data-tag-idx="${idx}"]`);
+      if(tagWrap){
+        const name = e.target.value.trim().toLowerCase();
+        const team = name ? Object.values(DB.teams).find(t=>t.name.toLowerCase()===name) : null;
+        if(!name) tagWrap.innerHTML = '';
+        else if(!team) tagWrap.innerHTML = '<span class="hint newTeamTag" style="margin-top:4px;">New team</span>';
+        else { const r = getTeamRank(team.id); tagWrap.innerHTML = `<span class="hint rankTag" style="margin-top:4px; color:var(--gold);">Rank #${r.rank} · ${r.points} pts</span>`; }
+      }
+    });
+  });
+  const shuffleBtn = document.getElementById('shuffleNamesBtn');
+  if(shuffleBtn) shuffleBtn.addEventListener('click', ()=>{
+    VIEWSTATE.form.teamNames = shuffle(VIEWSTATE.form.teamNames);
+    render();
+    toast('Order shuffled');
   });
   const createBtn = document.getElementById('createTournamentBtn');
   if(createBtn) createBtn.addEventListener('click', ()=>{
@@ -1237,6 +1397,17 @@ function attachHandlers(){
     const t = DB.tournaments[genKO.dataset.generateKnockout];
     generateKnockoutForGroupTournament(t);
     render();
+  });
+  const regenKO = document.querySelector('[data-regenerate-knockout]');
+  if(regenKO) regenKO.addEventListener('click', ()=>{
+    const t = DB.tournaments[regenKO.dataset.regenerateKnockout];
+    confirmModal('Regenerate the knockout bracket?', 'This wipes all knockout-stage results and re-seeds from the current group standings. Group results are untouched.', ()=>{
+      t.knockout = null;
+      if(t.status==='completed'){ t.status='active'; t.winnerTeamId=null; t.runnerUpTeamId=null; }
+      generateKnockoutForGroupTournament(t);
+      render();
+      toast('Knockout bracket regenerated');
+    }, 'Regenerate');
   });
 
   // Group tabs
@@ -1476,14 +1647,14 @@ function confirmImportModal(nTournaments, nTeams, onChoose){
   document.getElementById('iReplace').addEventListener('click', ()=>{ close(); onChoose('replace'); });
 }
 
-function confirmModal(title, body, onConfirm){
+function confirmModal(title, body, onConfirm, confirmLabel){
   const root = document.getElementById('modalRoot');
   root.innerHTML = `<div class="modal-backdrop" id="cBackdrop">
     <div class="modal">
       <h3>${esc(title)}</h3><p>${esc(body)}</p>
       <div class="actions">
         <button class="btn btn-ghost" id="cCancel">Cancel</button>
-        <button class="btn btn-danger" id="cConfirm">Delete</button>
+        <button class="btn btn-danger" id="cConfirm">${esc(confirmLabel || 'Delete')}</button>
       </div>
     </div></div>`;
   document.getElementById('cCancel').addEventListener('click', ()=> root.innerHTML='');
