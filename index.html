@@ -163,6 +163,36 @@
   .score-box input{width:52px; text-align:center; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:9px 4px; font-family:'JetBrains Mono'; font-size:16px;}
   .score-box .sep{color:var(--muted); font-family:'JetBrains Mono';}
   .score-box button{margin-left:6px;}
+  /* World-rank badge (ranking going into the tournament) */
+  .rk{display:inline-block; font-family:'JetBrains Mono',monospace; font-size:10.5px; font-weight:700; color:var(--gold);
+      background:#221a05; border:1px solid var(--gold-dim); border-radius:4px; padding:0 5px; line-height:17px;
+      margin-right:7px; vertical-align:1px; font-style:normal;}
+  .side.right .rk{margin-right:0; margin-left:7px;}
+  table.standings td.teamname{white-space:nowrap;}
+  /* Head-to-head dropdown */
+  .match-block{margin-bottom:8px;}
+  .match-block .match-row{margin-bottom:0;}
+  details.h2h{margin-top:4px;}
+  details.h2h summary{list-style:none; cursor:pointer; font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted);
+      text-transform:uppercase; letter-spacing:.04em; padding:6px 14px; user-select:none;}
+  details.h2h summary::-webkit-details-marker{display:none;}
+  details.h2h summary::after{content:' ▾'; color:var(--gold);}
+  details.h2h[open] summary::after{content:' ▴';}
+  details.h2h summary b{color:var(--text); font-weight:700;}
+  .h2h-body{background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin:2px 0 6px;}
+  .h2h-head{display:flex; justify-content:space-between; gap:8px; font-family:'Oswald',sans-serif; text-transform:uppercase; font-size:13px;
+      letter-spacing:.03em; padding-bottom:8px; margin-bottom:6px; border-bottom:1px solid var(--border);}
+  .h2h-head span:nth-child(2){color:var(--muted);}
+  .h2h-row{display:flex; align-items:baseline; gap:10px; padding:5px 0; font-size:12.5px;}
+  .h2h-score{font-family:'JetBrains Mono',monospace; font-weight:700; min-width:44px;}
+  .h2h-score.a{color:var(--teal);} .h2h-score.b{color:var(--red);} .h2h-score.d{color:var(--muted);}
+  .h2h-where{color:var(--muted);}
+  .h2h-pen{color:var(--muted); font-style:italic;}
+  .h2h-none{font-family:'JetBrains Mono',monospace; font-size:10.5px; color:#5b6475; text-transform:uppercase; letter-spacing:.04em; padding:5px 14px 0;}
+  .bmatch details.h2h summary{padding:6px 4px 2px; font-size:10px;}
+  .bmatch .h2h-body{margin:4px 0 2px; padding:8px 9px;}
+  .bmatch .h2h-none{padding:4px 4px 0; font-size:9.5px;}
+  .bmatch .h2h-head{font-size:11.5px;}
   .vs{color:var(--muted); font-family:'JetBrains Mono'; font-size:12px;}
 
   /* Bracket */
@@ -234,6 +264,7 @@
     .btn-sm{padding:9px 13px;}
     .match-row{grid-template-columns:1fr; text-align:center; padding:12px 14px;}
     .match-row .side.right{text-align:center;}
+    .match-block details.h2h summary, .match-block .h2h-none{text-align:center;}
     .bmatch .edit-link{padding:6px 0 2px;}
     .team-list li{padding:16px;}
   }
@@ -448,10 +479,14 @@ const STAGE_SYNTH_RECORD = {
 };
 const KNOCKOUT_STAGE_KEYS = ['r64','r32','r16','quarter','semi','third','runner_up','winner'];
 
-function computeTeamRankingPoints(teamId){
+// beforeTs (optional): only count completed tournaments created before this time —
+// used to rebuild the ranking exactly as it stood going into an earlier tournament.
+function computeTeamRankingPoints(teamId, beforeTs){
+  if(beforeTs===undefined) beforeTs = Infinity;
   let points = 0;
   allTournamentsForTeam(teamId).forEach(t=>{
     if(t.status!=='completed') return; // in-progress tournaments never affect ranking
+    if(!(t.createdAt < beforeTs)) return; // tournaments from after the snapshot point don't count
     let w=0,d=0,l=0;
     collectPlainMatches(t).filter(m=>m.played && (m.home===teamId||m.away===teamId)).forEach(m=>{
       const my = m.home===teamId?m.homeScore:m.awayScore, opp = m.home===teamId?m.awayScore:m.homeScore;
@@ -486,6 +521,106 @@ function getTeamRank(teamId){
   const idx = board.findIndex(r=>r.id===teamId);
   return idx===-1 ? null : {rank: idx+1, points: board[idx].points, total: board.length};
 }
+/* ---- Ranking as it stood going INTO a tournament ----
+   Counts every completed tournament created before this one, plus all
+   manually-added past records. Cached per render for speed. */
+let __rankCache = {};
+function rankingSnapshot(t){
+  const key = t ? t.id : '__now__';
+  if(__rankCache[key]) return __rankCache[key];
+  const cutoff = t ? t.createdAt : Infinity;
+  const rows = [];
+  Object.values(DB.teams).forEach(team=>{
+    const points = computeTeamRankingPoints(team.id, cutoff);
+    const existed = (team.createdAt||0) <= cutoff || points>0 || (t && t.teamIds.includes(team.id));
+    if(existed) rows.push({id:team.id, name:team.name, points});
+  });
+  rows.sort((a,b)=> b.points-a.points || a.name.localeCompare(b.name));
+  const map = {};
+  rows.forEach((r,i)=> map[r.id] = {rank:i+1, points:r.points, total:rows.length});
+  __rankCache[key] = map;
+  return map;
+}
+function rankBadge(t, teamId){
+  if(!teamId) return '';
+  const r = rankingSnapshot(t)[teamId];
+  if(!r) return '';
+  return `<span class="rk" title="World ranking going into this tournament (${r.points} pts)">#${r.rank}</span>`;
+}
+function sortTeamIdsBySnapshot(ids, t){
+  const snap = rankingSnapshot(t);
+  return [...ids].sort((a,b)=> ((snap[a]||{rank:1e9}).rank) - ((snap[b]||{rank:1e9}).rank));
+}
+
+/* ---- Head-to-head: previous meetings between two teams ---- */
+// order: position of a match inside its tournament (group/league rounds first, then knockout rounds)
+function allMeetings(){
+  const out = [];
+  Object.values(DB.tournaments).forEach(t=>{
+    const push = (m, home, away, hs, as, winner, stage, order)=> out.push({t, m, home, away, hs, as, winner, stage, order});
+    if(t.type==='league'){
+      t.matches.forEach(m=>{ if(m.played) push(m, m.home, m.away, m.homeScore, m.awayScore, null, 'Round '+m.round, m.round); });
+    } else if(t.type==='group_knockout'){
+      t.groups.forEach(g=> g.matches.forEach(m=>{ if(m.played) push(m, m.home, m.away, m.homeScore, m.awayScore, null, 'Group '+g.name, m.round); }));
+    }
+    const br = t.type==='knockout' ? t.bracket : (t.type==='group_knockout' ? t.knockout : null);
+    if(br){
+      const n = br.rounds.length;
+      br.rounds.forEach((r,ri)=> r.forEach(m=>{
+        if(m.played && !m.bye && m.teamA && m.teamB) push(m, m.teamA, m.teamB, m.scoreA, m.scoreB, m.winner, roundName(n,ri), 1000+ri);
+      }));
+      const tp = br.thirdPlace;
+      if(tp && tp.played && tp.teamA && tp.teamB) push(tp, tp.teamA, tp.teamB, tp.scoreA, tp.scoreB, tp.winner, 'Third place', 1000+n-1);
+    }
+  });
+  return out;
+}
+function matchOrderIn(t, m){
+  if(m.round!==undefined && m.home!==undefined) return m.round;
+  const br = t.type==='knockout' ? t.bracket : t.knockout;
+  if(!br) return 0;
+  if(br.thirdPlace && br.thirdPlace.id===m.id) return 1000+br.rounds.length-1;
+  const ri = br.rounds.findIndex(r=> r.some(x=>x.id===m.id));
+  return 1000+(ri<0?0:ri);
+}
+// Meetings between a and b that happened BEFORE match m of tournament t
+function previousMeetings(t, m, a, b){
+  const myOrder = matchOrderIn(t, m);
+  return allMeetings().filter(x=>{
+    if(x.m.id===m.id) return false;
+    if(!((x.home===a && x.away===b) || (x.home===b && x.away===a))) return false;
+    if(x.t.id===t.id) return x.order < myOrder;
+    return x.t.createdAt < t.createdAt;
+  }).sort((p,q)=> (q.t.createdAt-p.t.createdAt) || (q.order-p.order));
+}
+function h2hHtml(t, m, a, b){
+  if(!a || !b) return '';
+  const list = previousMeetings(t, m, a, b);
+  if(!list.length) return `<div class="h2h-none">First meeting</div>`;
+  let aw=0, d=0, bw=0;
+  const rows = list.map(x=>{
+    // always show from a's perspective
+    const aFirst = x.home===a;
+    const sa = aFirst ? x.hs : x.as, sb = aFirst ? x.as : x.hs;
+    let res;
+    if(x.winner){ res = x.winner===a ? 'a' : 'b'; }
+    else res = sa>sb ? 'a' : sa<sb ? 'b' : 'd';
+    if(res==='a') aw++; else if(res==='b') bw++; else d++;
+    const pens = x.winner && sa===sb ? ` <span class="h2h-pen">(${esc(teamName(x.winner))} won)</span>` : '';
+    return `<div class="h2h-row">
+      <span class="h2h-score ${res}">${sa}–${sb}</span>
+      <span class="h2h-where">${esc(x.t.name)} · ${esc(x.stage)}${pens}</span>
+    </div>`;
+  }).join('');
+  return `<details class="h2h">
+    <summary>Head-to-head · ${list.length} meeting${list.length!==1?'s':''} · <b>${aw}W ${d}D ${bw}L</b></summary>
+    <div class="h2h-body">
+      <div class="h2h-head"><span>${esc(teamName(a))} ${aw}</span><span>Draws ${d}</span><span>${bw} ${esc(teamName(b))}</span></div>
+      ${rows}
+    </div>
+  </details>`;
+}
+
 // Order team ids by current ranking (best first); brand-new teams (0 pts, no history) sort last
 function sortTeamIdsByRanking(ids){
   const pts = {}; ids.forEach(id=> pts[id]=computeTeamRankingPoints(id));
@@ -695,6 +830,7 @@ document.getElementById('topNav').addEventListener('click', e=>{
 });
 
 function render(){
+  __rankCache = {};
   document.querySelectorAll('#topNav button').forEach(b=>{
     b.classList.toggle('active', (b.dataset.r===ROUTE.name) || (b.dataset.r==='dashboard' && ROUTE.name==='tournament'));
   });
@@ -960,8 +1096,12 @@ function renderTournament(id){
       <div>
         <span class="eyebrow">${typeLabel[t.type]}</span>
         <h1>${esc(t.name)}</h1>
+        <p class="hint" style="margin:6px 0 0; color:var(--muted); font-size:12.5px;"><span class="rk">#</span> = world ranking going into this tournament</p>
       </div>
-      <button class="btn btn-danger btn-sm" data-delete-tournament="${t.id}">Delete tournament</button>
+      <div style="display:flex; gap:8px;">
+        <button class="btn btn-sm" data-rename-tournament="${t.id}">Rename</button>
+        <button class="btn btn-danger btn-sm" data-delete-tournament="${t.id}">Delete tournament</button>
+      </div>
     </div>
     ${body}
   `;
@@ -981,7 +1121,7 @@ function renderLeagueView(t){
     </tr></thead><tbody>
     ${standings.map((r,i)=>`<tr>
       <td class="rank-badge">${i+1}</td>
-      <td class="teamname">${esc(teamName(r.teamId))}</td>
+      <td class="teamname">${rankBadge(t, r.teamId)}${esc(teamName(r.teamId))}</td>
       <td class="num">${r.played}</td><td class="num">${r.won}</td><td class="num">${r.draw}</td><td class="num">${r.lost}</td>
       <td class="num">${r.gf}</td><td class="num">${r.ga}</td><td class="num">${r.gf-r.ga}</td>
       <td class="pts">${r.pts}</td>
@@ -1007,16 +1147,16 @@ function matchRowHtml(t, m){
   const played = m.played;
   const homeWin = played && m.homeScore>m.awayScore;
   const awayWin = played && m.awayScore>m.homeScore;
-  return `<div class="match-row" data-match-league="${t.id}|${m.id}">
-    <div class="side ${homeWin?'winner':''}">${esc(teamName(m.home))}</div>
+  return `<div class="match-block"><div class="match-row" data-match-league="${t.id}|${m.id}">
+    <div class="side ${homeWin?'winner':''}">${rankBadge(t, m.home)}${esc(teamName(m.home))}</div>
     <div class="score-box">
       <input type="number" min="0" class="scoreHome" value="${m.homeScore===null?'':m.homeScore}" placeholder="-">
       <span class="sep">:</span>
       <input type="number" min="0" class="scoreAway" value="${m.awayScore===null?'':m.awayScore}" placeholder="-">
       <button class="btn btn-sm btn-primary saveMatchBtn">${played?'Update':'Save'}</button>
     </div>
-    <div class="side right ${awayWin?'winner':''}">${esc(teamName(m.away))}</div>
-  </div>`;
+    <div class="side right ${awayWin?'winner':''}">${esc(teamName(m.away))}${rankBadge(t, m.away)}</div>
+  </div>${h2hHtml(t, m, m.home, m.away)}</div>`;
 }
 function finalizeLeague(t){
   const standings = computeStandings(t.teamIds, t.matches, t.settings.points);
@@ -1054,8 +1194,8 @@ function renderKnockoutView(t, bracket, groupCtxLabel){
 }
 function bracketMatchHtml(t, bracket, roundIdx, matchIdx, m){
   const isThird = roundIdx===-1;
-  const aName = m.teamA ? esc(teamName(m.teamA)) : '<span class="tbd">TBD</span>';
-  const bName = m.teamB ? esc(teamName(m.teamB)) : '<span class="tbd">TBD</span>';
+  const aName = m.teamA ? `<span>${rankBadge(t, m.teamA)}${esc(teamName(m.teamA))}</span>` : '<span class="tbd">TBD</span>';
+  const bName = m.teamB ? `<span>${rankBadge(t, m.teamB)}${esc(teamName(m.teamB))}</span>` : '<span class="tbd">TBD</span>';
   const scA = m.played && !m.bye ? `<span class="sc">${m.scoreA}</span>` : '';
   const scB = m.played && !m.bye ? `<span class="sc">${m.scoreB}</span>` : '';
   const canEdit = m.teamA && m.teamB && !m.bye;
@@ -1064,6 +1204,7 @@ function bracketMatchHtml(t, bracket, roundIdx, matchIdx, m){
     <div class="bteam ${m.played && m.winner===m.teamA ? 'winner':''} ${!m.teamA?'tbd':''}">${aName}${scA}</div>
     <div class="bteam ${m.played && m.winner===m.teamB ? 'winner':''} ${!m.teamB?'tbd':''}">${bName}${scB}</div>
     ${canEdit ? `<div class="edit-link" data-bracket-edit="${key}">${m.played?'Edit result':'Enter result'}</div>` : (m.bye? `<div class="edit-link" style="color:var(--muted); cursor:default;">Bye</div>`:'')}
+    ${canEdit ? h2hHtml(t, m, m.teamA, m.teamB) : ''}
   </div>`;
 }
 
@@ -1093,7 +1234,7 @@ function renderGroupKnockoutView(t){
       <th>#</th><th>Team</th><th class="num">P</th><th class="num">W</th><th class="num">D</th><th class="num">L</th><th class="num">GD</th><th class="num">Pts</th>
     </tr></thead><tbody>
     ${standings.map((r,i)=>`<tr class="${i<t.settings.advancePerGroup?'qualify':''}">
-      <td class="rank-badge">${i+1}</td><td class="teamname">${esc(teamName(r.teamId))}</td>
+      <td class="rank-badge">${i+1}</td><td class="teamname">${rankBadge(t, r.teamId)}${esc(teamName(r.teamId))}</td>
       <td class="num">${r.played}</td><td class="num">${r.won}</td><td class="num">${r.draw}</td><td class="num">${r.lost}</td>
       <td class="num">${r.gf-r.ga}</td><td class="pts">${r.pts}</td>
     </tr>`).join('')}</tbody></table>`;
@@ -1110,16 +1251,16 @@ function matchRowHtml_Group(t, g, m){
   const played = m.played;
   const homeWin = played && m.homeScore>m.awayScore;
   const awayWin = played && m.awayScore>m.homeScore;
-  return `<div class="match-row" data-match-group="${t.id}|${g.name}|${m.id}">
-    <div class="side ${homeWin?'winner':''}">${esc(teamName(m.home))}</div>
+  return `<div class="match-block"><div class="match-row" data-match-group="${t.id}|${g.name}|${m.id}">
+    <div class="side ${homeWin?'winner':''}">${rankBadge(t, m.home)}${esc(teamName(m.home))}</div>
     <div class="score-box">
       <input type="number" min="0" class="scoreHome" value="${m.homeScore===null?'':m.homeScore}" placeholder="-">
       <span class="sep">:</span>
       <input type="number" min="0" class="scoreAway" value="${m.awayScore===null?'':m.awayScore}" placeholder="-">
       <button class="btn btn-sm btn-primary saveMatchBtn">${played?'Update':'Save'}</button>
     </div>
-    <div class="side right ${awayWin?'winner':''}">${esc(teamName(m.away))}</div>
-  </div>`;
+    <div class="side right ${awayWin?'winner':''}">${esc(teamName(m.away))}${rankBadge(t, m.away)}</div>
+  </div>${h2hHtml(t, m, m.home, m.away)}</div>`;
 }
 
 function generateKnockoutForGroupTournament(t){
@@ -1132,7 +1273,7 @@ function generateKnockoutForGroupTournament(t){
       if(st[pos]) tierIds.push(st[pos].teamId);
     });
     // within this tier (e.g. all group winners), strongest-ranked first — keeps top teams apart deeper into the bracket
-    byPosition.push(...sortTeamIdsByRanking(tierIds));
+    byPosition.push(...sortTeamIdsBySnapshot(tierIds, t));
   }
   t.knockout = buildBracket(byPosition, t.settings.thirdPlace);
   saveDB();
@@ -1219,7 +1360,7 @@ function renderTeamDetail(id){
     </div>`).join('');
 
   const autoRows = history.map(t=>`<div class="history-item" data-goto-tournament="${t.id}" style="cursor:pointer;">
-    <div><div class="hname">${esc(t.name)}</div><div class="htype">${typeLabel[t.type]} · ${new Date(t.createdAt).toLocaleDateString()}</div></div>
+    <div><div class="hname">${esc(t.name)}</div><div class="htype">${typeLabel[t.type]} · ${new Date(t.createdAt).toLocaleDateString()}${(()=>{ const r = rankingSnapshot(t)[id]; return r ? ' · Entered #'+r.rank : ''; })()}</div></div>
     <div class="hresult">${esc(teamResultInTournament(t,id))}</div>
   </div>`).join('');
 
@@ -1522,6 +1663,17 @@ function attachHandlers(){
     confirmModal('Delete this team?', 'Its manually-added records will be removed permanently.', ()=>{
       delete DB.teams[teamId];
       saveDB(); go('teams'); toast('Team deleted');
+    });
+  });
+
+  // Rename tournament
+  const renameTBtn = document.querySelector('[data-rename-tournament]');
+  if(renameTBtn) renameTBtn.addEventListener('click', ()=>{
+    const tid = renameTBtn.dataset.renameTournament;
+    promptModal('Rename tournament', 'Tournament name', DB.tournaments[tid].name, (val)=>{
+      if(!val.trim()){ toast('Enter a name'); return; }
+      DB.tournaments[tid].name = val.trim();
+      saveDB(); render(); toast('Tournament renamed');
     });
   });
 
