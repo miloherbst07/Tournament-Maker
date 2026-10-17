@@ -169,6 +169,33 @@
       margin-right:7px; vertical-align:1px; font-style:normal;}
   .side.right .rk{margin-right:0; margin-left:7px;}
   table.standings td.teamname{white-space:nowrap;}
+  /* Matchups page */
+  .mu-pick{display:grid; grid-template-columns:1fr auto 1fr; gap:10px; align-items:end;}
+  .mu-pick .btn{height:44px; font-size:18px; justify-content:center;}
+  .mu-result{margin-top:18px; padding-top:16px; border-top:1px solid var(--border);}
+  .mu-never{color:var(--muted); text-align:center; padding:8px 0; font-size:14px;}
+  .mu-score{display:grid; grid-template-columns:1fr auto 1fr; gap:12px; text-align:center; align-items:start;}
+  .mu-big{font-family:'Oswald',sans-serif; font-size:40px; font-weight:600; line-height:1; color:var(--text);}
+  .mu-big.lead{color:var(--teal);}
+  .mu-big.draw{color:var(--muted); font-size:28px; padding-top:8px;}
+  .mu-lbl{font-size:12px; color:var(--muted); margin-top:6px; text-transform:uppercase; letter-spacing:.04em; font-weight:600;}
+  .mu-meta{text-align:center; font-family:'JetBrains Mono',monospace; font-size:11.5px; color:var(--muted); margin-top:12px; text-transform:uppercase; letter-spacing:.05em;}
+  .mu-li{gap:12px; justify-content:flex-start !important;}
+  .mu-num{flex:none;}
+  .mu-pair{flex:1; min-width:0;}
+  .mu-names{font-weight:600; font-size:14.5px;}
+  .mu-names .rk{margin-right:5px;}
+  .mu-v{color:var(--muted); font-weight:400; margin:0 4px; font-size:12px;}
+  .mu-lead{color:var(--teal);}
+  .mu-sub{color:var(--muted); font-size:12px; font-family:'JetBrains Mono',monospace; margin-top:3px;}
+  .mu-count{text-align:center; flex:none;}
+  .mu-count b{display:block; font-family:'Oswald',sans-serif; font-size:22px; color:var(--gold); line-height:1;}
+  .mu-count span{font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em;}
+  .mu-res{font-weight:700; font-size:14px;}
+  .mu-up{font-size:10.5px; color:var(--gold); text-transform:uppercase; letter-spacing:.05em; font-weight:700; border:1px solid var(--gold-dim); border-radius:20px; padding:2px 8px; white-space:nowrap;}
+  nav.top-nav{overflow-x:auto; scrollbar-width:none;}
+  nav.top-nav::-webkit-scrollbar{display:none;}
+  nav.top-nav button{white-space:nowrap; flex:none;}
   /* Head-to-head dropdown */
   .match-block{margin-bottom:8px;}
   .match-block .match-row{margin-bottom:0;}
@@ -259,7 +286,8 @@
     .row2, .row3{grid-template-columns:1fr;}
     .format-picker{grid-template-columns:1fr;}
     header.top{padding:14px 0; flex-wrap:wrap; gap:10px;}
-    nav.top-nav button{padding:10px 13px; font-size:13px;}
+    nav.top-nav{width:100%;}
+    nav.top-nav button{padding:10px 12px; font-size:12.5px;}
     .btn{padding:12px 18px;}
     .btn-sm{padding:9px 13px;}
     .match-row{grid-template-columns:1fr; text-align:center; padding:12px 14px;}
@@ -287,6 +315,7 @@
       <button data-r="dashboard">Tournaments</button>
       <button data-r="teams">Teams</button>
       <button data-r="rankings">Rankings</button>
+      <button data-r="matchups">Matchups</button>
       <button data-r="new">+ New</button>
     </nav>
   </header>
@@ -554,23 +583,25 @@ function sortTeamIdsBySnapshot(ids, t){
 
 /* ---- Head-to-head: previous meetings between two teams ---- */
 // order: position of a match inside its tournament (group/league rounds first, then knockout rounds)
-function allMeetings(){
+// includeUpcoming: also return fixtures with both teams set but no result yet (played:false)
+function allMeetings(includeUpcoming){
   const out = [];
+  const ok = m => m.played || includeUpcoming;
   Object.values(DB.tournaments).forEach(t=>{
-    const push = (m, home, away, hs, as, winner, stage, order)=> out.push({t, m, home, away, hs, as, winner, stage, order});
+    const push = (m, home, away, hs, as, winner, stage, order)=> out.push({t, m, home, away, hs, as, winner, stage, order, played: !!m.played});
     if(t.type==='league'){
-      t.matches.forEach(m=>{ if(m.played) push(m, m.home, m.away, m.homeScore, m.awayScore, null, 'Round '+m.round, m.round); });
+      t.matches.forEach(m=>{ if(ok(m)) push(m, m.home, m.away, m.homeScore, m.awayScore, null, 'Round '+m.round, m.round); });
     } else if(t.type==='group_knockout'){
-      t.groups.forEach(g=> g.matches.forEach(m=>{ if(m.played) push(m, m.home, m.away, m.homeScore, m.awayScore, null, 'Group '+g.name, m.round); }));
+      t.groups.forEach(g=> g.matches.forEach(m=>{ if(ok(m)) push(m, m.home, m.away, m.homeScore, m.awayScore, null, 'Group '+g.name, m.round); }));
     }
     const br = t.type==='knockout' ? t.bracket : (t.type==='group_knockout' ? t.knockout : null);
     if(br){
       const n = br.rounds.length;
       br.rounds.forEach((r,ri)=> r.forEach(m=>{
-        if(m.played && !m.bye && m.teamA && m.teamB) push(m, m.teamA, m.teamB, m.scoreA, m.scoreB, m.winner, roundName(n,ri), 1000+ri);
+        if(ok(m) && !m.bye && m.teamA && m.teamB) push(m, m.teamA, m.teamB, m.scoreA, m.scoreB, m.winner, roundName(n,ri), 1000+ri);
       }));
       const tp = br.thirdPlace;
-      if(tp && tp.played && tp.teamA && tp.teamB) push(tp, tp.teamA, tp.teamB, tp.scoreA, tp.scoreB, tp.winner, 'Third place', 1000+n-1);
+      if(tp && ok(tp) && tp.teamA && tp.teamB) push(tp, tp.teamA, tp.teamB, tp.scoreA, tp.scoreB, tp.winner, 'Third place', 1000+n-1);
     }
   });
   return out;
@@ -841,6 +872,7 @@ function render(){
   else if(ROUTE.name==='teams') app.innerHTML = renderTeams();
   else if(ROUTE.name==='team') app.innerHTML = renderTeamDetail(ROUTE.params.id);
   else if(ROUTE.name==='rankings') app.innerHTML = renderRankings();
+  else if(ROUTE.name==='matchups') app.innerHTML = renderMatchups();
   attachHandlers();
 }
 
@@ -1303,6 +1335,143 @@ function renderRankings(){
     <div class="card" style="padding:0;"><ul class="team-list">${rows}</ul></div>
   `;
 }
+/* =========================================================
+   MATCHUPS  (rivalries, head-to-head search, biggest games)
+========================================================= */
+// A meeting seen from team a's side: scores + result 'a' (a won), 'b' (b won) or 'd'
+function meetingFromA(x, a){
+  const aFirst = x.home===a;
+  const sa = aFirst ? x.hs : x.as, sb = aFirst ? x.as : x.hs;
+  let res;
+  if(x.winner) res = x.winner===a ? 'a' : 'b';
+  else res = sa>sb ? 'a' : sa<sb ? 'b' : 'd';
+  return {sa, sb, res};
+}
+function h2hRecord(list, a){
+  let aw=0, d=0, bw=0;
+  list.forEach(x=>{ const r = meetingFromA(x,a).res; if(r==='a') aw++; else if(r==='b') bw++; else d++; });
+  return {aw, d, bw};
+}
+function currentRankTag(id){
+  const r = rankingSnapshot(null)[id];
+  return r ? `<span class="rk" title="Current world ranking">#${r.rank}</span>` : '';
+}
+function renderMatchups(){
+  const teams = Object.values(DB.teams).sort((x,y)=> x.name.localeCompare(y.name));
+  if(teams.length<2){
+    return `<div class="page-head"><span class="eyebrow">Head-to-Head</span><h1>Matchups</h1></div>
+      <div class="empty-state"><h3>Not enough teams yet</h3><p>Matchups appear once teams have played each other.</p></div>`;
+  }
+  const played = allMeetings(false);
+  const A = VIEWSTATE.h2hA || '', B = VIEWSTATE.h2hB || '';
+
+  /* ---- 1. Search two teams ---- */
+  const opts = sel => `<option value="">Pick a team</option>` + teams.map(t=>`<option value="${t.id}" ${t.id===sel?'selected':''}>${esc(t.name)}</option>`).join('');
+  let result = '';
+  if(A && B && A===B){
+    result = `<p class="hint" style="margin:14px 0 0;">Pick two different teams.</p>`;
+  } else if(A && B){
+    const list = played.filter(x=> (x.home===A && x.away===B) || (x.home===B && x.away===A))
+      .sort((p,q)=> (q.t.createdAt-p.t.createdAt) || (q.order-p.order));
+    if(!list.length){
+      result = `<div class="mu-result"><div class="mu-never">${esc(teamName(A))} and ${esc(teamName(B))} have never played each other.</div></div>`;
+    } else {
+      const rec = h2hRecord(list, A);
+      let gfA=0, gfB=0;
+      const rows = list.map(x=>{
+        const r = meetingFromA(x, A);
+        gfA += r.sa||0; gfB += r.sb||0;
+        const pens = x.winner && r.sa===r.sb ? ` <span class="h2h-pen">(${esc(teamName(x.winner))} won)</span>` : '';
+        return `<div class="h2h-row" data-goto-tournament="${x.t.id}" style="cursor:pointer;">
+          <span class="h2h-score ${r.res}">${r.sa}–${r.sb}</span>
+          <span class="h2h-where">${esc(x.t.name)} · ${esc(x.stage)}${pens}</span>
+        </div>`;
+      }).join('');
+      result = `<div class="mu-result">
+        <div class="mu-score">
+          <div class="mu-side"><div class="mu-big ${rec.aw>rec.bw?'lead':''}">${rec.aw}</div><div class="mu-lbl">${currentRankTag(A)}${esc(teamName(A))} wins</div></div>
+          <div class="mu-side"><div class="mu-big draw">${rec.d}</div><div class="mu-lbl">Draws</div></div>
+          <div class="mu-side"><div class="mu-big ${rec.bw>rec.aw?'lead':''}">${rec.bw}</div><div class="mu-lbl">${currentRankTag(B)}${esc(teamName(B))} wins</div></div>
+        </div>
+        <div class="mu-meta">${list.length} meeting${list.length!==1?'s':''} · Goals ${gfA}–${gfB}</div>
+        <div class="h2h-body" style="margin:12px 0 0;">${rows}</div>
+      </div>`;
+    }
+  }
+  const search = `<div class="card" id="muSearch" style="margin-bottom:26px;">
+    <div class="mu-pick">
+      <div class="field" style="margin:0;"><label>Team 1</label><select id="muA">${opts(A)}</select></div>
+      <button class="btn btn-sm btn-ghost" id="muSwap" title="Swap teams" aria-label="Swap teams">⇄</button>
+      <div class="field" style="margin:0;"><label>Team 2</label><select id="muB">${opts(B)}</select></div>
+    </div>
+    ${result}
+  </div>`;
+
+  /* ---- 2. Most-played rivalries ---- */
+  const pairs = {};
+  played.forEach(x=>{
+    const [a,b] = [x.home, x.away].sort();
+    const k = a+'|'+b;
+    (pairs[k] = pairs[k] || {a, b, list:[], last:0}).list.push(x);
+    pairs[k].last = Math.max(pairs[k].last, x.t.createdAt);
+  });
+  const rivalries = Object.values(pairs).sort((p,q)=> q.list.length-p.list.length || q.last-p.last).slice(0,10);
+  const rivalRows = rivalries.map((p,i)=>{
+    const rec = h2hRecord(p.list, p.a);
+    return `<li class="mu-li" data-h2h-pick="${p.a}|${p.b}">
+      <span class="rank-badge mu-num">${i+1}</span>
+      <div class="mu-pair">
+        <div class="mu-names"><span class="${rec.aw>rec.bw?'mu-lead':''}">${esc(teamName(p.a))}</span> <span class="mu-v">v</span> <span class="${rec.bw>rec.aw?'mu-lead':''}">${esc(teamName(p.b))}</span></div>
+        <div class="mu-sub">${rec.aw}W · ${rec.d}D · ${rec.bw}L</div>
+      </div>
+      <div class="mu-count"><b>${p.list.length}</b><span>games</span></div>
+    </li>`;
+  }).join('');
+
+  /* ---- 3. Biggest games by ranking (rank going into that tournament) ---- */
+  const big = allMeetings(true).map(x=>{
+    const snap = rankingSnapshot(x.t);
+    const ra = snap[x.home], rb = snap[x.away];
+    if(!ra || !rb) return null;
+    return {x, ra:ra.rank, rb:rb.rank, sum:ra.rank+rb.rank, best:Math.min(ra.rank, rb.rank)};
+  }).filter(Boolean)
+    .sort((p,q)=> p.sum-q.sum || p.best-q.best || (q.x.t.createdAt-p.x.t.createdAt) || (q.x.order-p.x.order))
+    .slice(0,10);
+  const bigRows = big.map((g,i)=>{
+    const x = g.x;
+    const aWin = x.played && (x.winner ? x.winner===x.home : x.hs>x.as);
+    const bWin = x.played && (x.winner ? x.winner===x.away : x.as>x.hs);
+    const score = x.played ? `<span class="mono mu-res">${x.hs}–${x.as}</span>` : `<span class="mu-up">Upcoming</span>`;
+    return `<li class="mu-li" data-goto-tournament="${x.t.id}">
+      <span class="rank-badge mu-num">${i+1}</span>
+      <div class="mu-pair">
+        <div class="mu-names"><span class="rk">#${g.ra}</span><span class="${aWin?'mu-lead':''}">${esc(teamName(x.home))}</span> <span class="mu-v">v</span> <span class="rk">#${g.rb}</span><span class="${bWin?'mu-lead':''}">${esc(teamName(x.away))}</span></div>
+        <div class="mu-sub">${esc(x.t.name)} · ${esc(x.stage)}</div>
+      </div>
+      <div>${score}</div>
+    </li>`;
+  }).join('');
+
+  return `
+    <div class="page-head"><span class="eyebrow">Head-to-Head</span><h1>Matchups</h1>
+      <p>Look up any two teams, see the most-played rivalries, and the biggest games by world ranking.</p></div>
+
+    <div class="section-title"><h3>Head-to-Head Search</h3></div>
+    ${search}
+
+    <div class="section-title"><h3>Most-Played Matchups</h3></div>
+    <div class="card" style="padding:0; margin-bottom:26px;">
+      ${rivalRows ? `<ul class="team-list">${rivalRows}</ul>` : '<p class="hint" style="padding:16px; margin:0;">No games played yet.</p>'}
+    </div>
+
+    <div class="section-title"><h3>Top-Ranked Games</h3></div>
+    <p class="hint" style="margin:-6px 0 12px; color:var(--muted); font-size:12.5px;">Ranked by both teams' world ranking going into that tournament — #1 v #2 is the biggest game possible.</p>
+    <div class="card" style="padding:0;">
+      ${bigRows ? `<ul class="team-list">${bigRows}</ul>` : '<p class="hint" style="padding:16px; margin:0;">No games yet.</p>'}
+    </div>
+  `;
+}
+
 function renderTeams(){
   const teams = Object.values(DB.teams).map(t=>{
     const stats = computeTeamCareerStats(t.id);
@@ -1663,6 +1832,21 @@ function attachHandlers(){
     confirmModal('Delete this team?', 'Its manually-added records will be removed permanently.', ()=>{
       delete DB.teams[teamId];
       saveDB(); go('teams'); toast('Team deleted');
+    });
+  });
+
+  // Matchups page
+  const muA = document.getElementById('muA'), muB = document.getElementById('muB');
+  if(muA) muA.addEventListener('change', e=>{ VIEWSTATE.h2hA = e.target.value; render(); });
+  if(muB) muB.addEventListener('change', e=>{ VIEWSTATE.h2hB = e.target.value; render(); });
+  const muSwap = document.getElementById('muSwap');
+  if(muSwap) muSwap.addEventListener('click', ()=>{ [VIEWSTATE.h2hA, VIEWSTATE.h2hB] = [VIEWSTATE.h2hB, VIEWSTATE.h2hA]; render(); });
+  app.querySelectorAll('[data-h2h-pick]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      const [a,b] = el.dataset.h2hPick.split('|');
+      VIEWSTATE.h2hA = a; VIEWSTATE.h2hB = b; render();
+      const s = document.getElementById('muSearch');
+      if(s) window.scrollTo({top: s.getBoundingClientRect().top + window.scrollY - 120, behavior:'smooth'});
     });
   });
 
