@@ -169,6 +169,17 @@
       margin-right:7px; vertical-align:1px; font-style:normal;}
   .side.right .rk{margin-right:0; margin-left:7px;}
   table.standings td.teamname{white-space:nowrap;}
+  /* Rankings sort + numbers */
+  .rk-sort{display:flex; align-items:center; gap:8px; margin-bottom:14px; flex-wrap:wrap;}
+  .rk-sort span{font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; margin-right:2px;}
+  .rk-sort button{background:var(--panel-2); border:1px solid var(--border); border-radius:20px; padding:8px 14px; font-size:12px; text-transform:uppercase; letter-spacing:.04em; cursor:pointer; color:var(--muted); font-weight:600;}
+  .rk-sort button.active{background:var(--gold); color:#161616; border-color:var(--gold);}
+  .rk-sub{color:var(--muted); font-size:12px; font-family:'JetBrains Mono',monospace; margin-top:2px;}
+  .rk-nums{display:flex; gap:16px; flex:none;}
+  .rk-num{text-align:center; min-width:44px;}
+  .rk-num b{display:block; font-family:'JetBrains Mono',monospace; font-size:14px; color:var(--muted); line-height:1.2;}
+  .rk-num span{font-size:9.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em;}
+  .rk-num.on b{color:var(--gold); font-size:16px; font-weight:700;}
   /* Matchups page */
   .mu-pick{display:grid; grid-template-columns:1fr auto 1fr; gap:10px; align-items:end;}
   .mu-pick .btn{height:44px; font-size:18px; justify-content:center;}
@@ -1314,8 +1325,18 @@ function generateKnockoutForGroupTournament(t){
 /* =========================================================
    TEAMS
 ========================================================= */
+// Rankings sort: 'total' (world ranking) or 'avg' (points per tournament). Remembered on this device.
+let RANK_SORT = (()=>{ try{ return localStorage.getItem('bracketed_rank_sort') || 'total'; }catch(e){ return 'total'; } })();
+function avgPts(points, events){ return events ? points/events : 0; }
+function fmtAvg(v){ return (Math.round(v*10)/10).toFixed(1); }
 function renderRankings(){
-  const board = computeRankingBoard();
+  const world = computeRankingBoard(); // official world ranking order (total points)
+  const worldRank = {}; world.forEach((r,i)=> worldRank[r.id] = i+1);
+  world.forEach(r=> r.avg = avgPts(r.points, r.tournaments));
+  const byAvg = RANK_SORT==='avg';
+  const board = byAvg
+    ? [...world].sort((a,b)=> (b.tournaments>0)-(a.tournaments>0) || b.avg-a.avg || b.points-a.points || a.name.localeCompare(b.name))
+    : world;
   if(board.length===0){
     return `<div class="page-head"><span class="eyebrow">World Ranking</span><h1>Rankings</h1></div>
       <div class="empty-state"><h3>No teams yet</h3><p>Rankings build up as tournaments are completed, or once you add past records to a team.</p></div>`;
@@ -1323,14 +1344,24 @@ function renderRankings(){
   const rows = board.map((r,i)=>`<li data-goto-team="${r.id}" style="cursor:pointer;">
     <div style="display:flex; align-items:center; gap:14px;">
       <span class="rank-badge" style="width:28px; font-size:15px; ${i<3?'color:var(--gold); font-weight:700;':''}">${i+1}</span>
-      <div class="tname">${esc(r.name)}</div>
+      <div>
+        <div class="tname">${esc(r.name)}</div>
+        <div class="rk-sub">${r.tournaments} event${r.tournaments!==1?'s':''}${byAvg?` · World #${worldRank[r.id]}`:''}</div>
+      </div>
     </div>
-    <div class="tstats"><span class="stat-chip">${r.tournaments} event${r.tournaments!==1?'s':''}</span>
-      <span class="stat-chip" style="margin-left:14px;"><b class="mono" style="color:var(--gold); font-size:15px;">${r.points}</b> pts</span></div>
+    <div class="rk-nums">
+      <div class="rk-num ${!byAvg?'on':''}"><b>${r.points}</b><span>Total</span></div>
+      <div class="rk-num ${byAvg?'on':''}"><b>${r.tournaments?fmtAvg(r.avg):'–'}</b><span>Avg</span></div>
+    </div>
   </li>`).join('');
   return `
     <div class="page-head"><span class="eyebrow">World Ranking</span><h1>Rankings</h1>
-      <p>Win +${MATCH_PTS.win} · Draw +${MATCH_PTS.draw} · Loss +${MATCH_PTS.loss} per match, plus a one-off bonus for the deepest stage reached (Round of 16 +1, Quarter-final +2, Semi-final +3, Runner-up +4, Winner +5). Only completed tournaments count.</p>
+      <p>Win +${MATCH_PTS.win} · Draw +${MATCH_PTS.draw} · Loss +${MATCH_PTS.loss} per match, plus a one-off bonus for the deepest stage reached (Round of 16 +1, Quarter-final +2, Semi-final +3, Runner-up +4, Winner +5). Only completed tournaments count. Avg = total points ÷ tournaments played (including past records).</p>
+    </div>
+    <div class="rk-sort">
+      <span>Sort by</span>
+      <button class="${!byAvg?'active':''}" data-rank-sort="total">Total pts</button>
+      <button class="${byAvg?'active':''}" data-rank-sort="avg">Avg / event</button>
     </div>
     <div class="card" style="padding:0;"><ul class="team-list">${rows}</ul></div>
   `;
@@ -1545,7 +1576,7 @@ function renderTeamDetail(id){
     </div>
     <div class="row3" style="margin-bottom:14px;">
       <div class="card" style="text-align:center;"><div class="eyebrow">World Rank</div><h2 style="font-size:28px;color:var(--gold);">#${rank?rank.rank:'—'}</h2></div>
-      <div class="card" style="text-align:center;"><div class="eyebrow">Ranking Points</div><h2 style="font-size:28px;" class="mono">${rank?rank.points:0}</h2></div>
+      <div class="card" style="text-align:center;"><div class="eyebrow">Ranking Points</div><h2 style="font-size:28px;" class="mono">${rank?rank.points:0}</h2>${(()=>{ const ev = history.filter(x=>x.status==='completed').length + records.length; return `<div class="hint" style="color:var(--muted); font-size:12px; margin-top:4px;">${ev?fmtAvg(avgPts(rank?rank.points:0, ev)):'–'} avg per tournament</div>`; })()}</div>
       <div class="card" style="text-align:center;"><div class="eyebrow">Titles</div><h2 style="font-size:28px;color:var(--gold);">${stageCounts.winner}</h2></div>
     </div>
     <div class="row3" style="margin-bottom:24px;">
@@ -1832,6 +1863,15 @@ function attachHandlers(){
     confirmModal('Delete this team?', 'Its manually-added records will be removed permanently.', ()=>{
       delete DB.teams[teamId];
       saveDB(); go('teams'); toast('Team deleted');
+    });
+  });
+
+  // Rankings sort toggle
+  app.querySelectorAll('[data-rank-sort]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      RANK_SORT = el.dataset.rankSort;
+      try{ localStorage.setItem('bracketed_rank_sort', RANK_SORT); }catch(e){}
+      render();
     });
   });
 
